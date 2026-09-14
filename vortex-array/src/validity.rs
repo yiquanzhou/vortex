@@ -167,7 +167,7 @@ impl Validity {
 
     /// Create an accessor with the requested policy for retaining state between lookups.
     ///
-    /// Mirrors [`ArrayRef::probe`]. Constant validity retains nothing; array-backed validity
+    /// Mirrors [`ArrayRef::probe`]. Uniform validity retains nothing; array-backed validity
     /// probes the underlying boolean array.
     pub fn probe(self, usage: ProbeUsage) -> ProbeValidity {
         match self {

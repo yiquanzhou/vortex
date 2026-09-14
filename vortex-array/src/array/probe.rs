@@ -319,8 +319,8 @@ fn validity_access<'p>(
 
 /// A validity accessor that retains preparation between lookups.
 ///
-/// Built by [`Validity::probe`]. Constant validity retains nothing; array-backed validity
-/// delegates to an [`ArrayProbe`] over the underlying boolean array.
+/// Built by [`Validity::probe`](crate::validity::Validity::probe). Uniform validity retains
+/// nothing; array-backed validity delegates to an [`ArrayProbe`] over the boolean array.
 pub enum ProbeValidity {
     /// Every row is valid, whether or not the dtype is nullable.
     AllValid,
