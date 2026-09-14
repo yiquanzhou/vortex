@@ -40,6 +40,7 @@ pub use probe::ProbeSlot;
 pub use probe::ProbeState;
 use probe::ProbeStorage;
 pub use probe::ProbeUsage;
+pub use probe::ProbeValidity;
 pub use probe::ValidityProbe;
 
 mod foreign;
@@ -519,11 +520,7 @@ impl<V: VTable> DynArrayData for ArrayData<V> {
                 .validity::<<V::OperationsVTable as OperationsVTable<V>>::ProbeState>(this)?,
             None => ValidityProbe::once(this)?,
         };
-        validity
-            .execute_scalar(index, ctx)?
-            .as_bool()
-            .value()
-            .ok_or_else(|| vortex_err!("validity value at index {index} is null"))
+        validity.execute_is_valid(index, ctx)
     }
 
     fn probe_scalar(

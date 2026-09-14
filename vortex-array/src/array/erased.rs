@@ -36,6 +36,7 @@ use crate::array::ArrayId;
 use crate::array::ArrayInner;
 use crate::array::ArraySlots;
 use crate::array::DynArrayData;
+use crate::array::probe;
 use crate::arrays::Constant;
 use crate::arrays::DictArray;
 use crate::arrays::FilterArray;
@@ -277,7 +278,7 @@ impl ArrayRef {
     /// Execute the array to extract a scalar at the given index.
     // TODO(joe): deprecate this.
     pub fn execute_scalar(&self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<Scalar> {
-        self.probe(ProbeUsage::Once).execute_scalar(index, ctx)
+        probe::execute_scalar(self, None, index, ctx)
     }
 
     /// Create an accessor with the requested policy for retaining state between scalar lookups.
@@ -300,7 +301,7 @@ impl ArrayRef {
     /// Returns whether the item at `index` is valid.
     // TODO(joe): deprecate this.
     pub fn is_valid(&self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<bool> {
-        self.probe(ProbeUsage::Once).execute_is_valid(index, ctx)
+        probe::execute_is_valid(self, None, index, ctx)
     }
 
     /// Returns whether the item at `index` is invalid.

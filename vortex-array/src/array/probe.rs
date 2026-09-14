@@ -14,7 +14,6 @@ use crate::ArrayView;
 use crate::ExecutionCtx;
 use crate::array::VTable;
 use crate::scalar::Scalar;
-use crate::validity::Validity;
 use crate::vtable::OperationsVTable;
 
 /// Whether scalar access should retain preparation for subsequent lookups.
@@ -108,7 +107,7 @@ impl ProbeSlot<'_> {
     /// Read a scalar using fresh or retained preparation as appropriate.
     pub fn execute_scalar(&mut self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<Scalar> {
         match self {
-            Self::Once(array) => array.probe(ProbeUsage::Once).execute_scalar(index, ctx),
+            Self::Once(array) => execute_scalar(array, None, index, ctx),
             Self::Repeated(probe) => probe.execute_scalar(index, ctx),
         }
     }
@@ -213,28 +212,47 @@ impl ArrayProbe {
 
     /// Read a scalar, including its nullness, preparing and reusing state as appropriate.
     pub fn execute_scalar(&mut self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<Scalar> {
-        vortex_ensure!(index < self.array.len(), OutOfBounds: index, 0, self.array.len());
-        if self.array.dtype().is_nullable() && !self.execute_is_valid(index, ctx)? {
-            return Ok(Scalar::null(self.array.dtype().clone()));
-        }
-        let scalar =
-            self.array
-                .dyn_array()
-                .probe_scalar(&self.array, index, self.state.as_mut(), ctx)?;
-        debug_assert_eq!(scalar.dtype(), self.array.dtype(), "Scalar dtype mismatch");
-        Ok(scalar)
+        execute_scalar(&self.array, self.state.as_mut(), index, ctx)
     }
 
     /// Check bounds and read validity using this probe's retention policy.
     pub fn execute_is_valid(&mut self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<bool> {
-        vortex_ensure!(index < self.array.len(), OutOfBounds: index, 0, self.array.len());
-        if !self.array.dtype().is_nullable() {
-            return Ok(true);
-        }
-        self.array
-            .dyn_array()
-            .probe_is_valid(&self.array, index, self.state.as_mut(), ctx)
+        execute_is_valid(&self.array, self.state.as_mut(), index, ctx)
     }
+}
+
+/// Read a scalar, including its nullness, against optional retained state.
+///
+/// One-off access passes `None` rather than building a probe, which keeps the per-element
+/// path free of handle clones.
+pub(crate) fn execute_scalar(
+    array: &ArrayRef,
+    mut state: Option<&mut ProbeStorage>,
+    index: usize,
+    ctx: &mut ExecutionCtx,
+) -> VortexResult<Scalar> {
+    vortex_ensure!(index < array.len(), OutOfBounds: index, 0, array.len());
+    let validity_state = state.as_deref_mut();
+    if array.dtype().is_nullable() && !execute_is_valid(array, validity_state, index, ctx)? {
+        return Ok(Scalar::null(array.dtype().clone()));
+    }
+    let scalar = array.dyn_array().probe_scalar(array, index, state, ctx)?;
+    debug_assert_eq!(scalar.dtype(), array.dtype(), "Scalar dtype mismatch");
+    Ok(scalar)
+}
+
+/// Check bounds and read validity against optional retained state.
+pub(crate) fn execute_is_valid(
+    array: &ArrayRef,
+    state: Option<&mut ProbeStorage>,
+    index: usize,
+    ctx: &mut ExecutionCtx,
+) -> VortexResult<bool> {
+    vortex_ensure!(index < array.len(), OutOfBounds: index, 0, array.len());
+    if !array.dtype().is_nullable() {
+        return Ok(true);
+    }
+    array.dyn_array().probe_is_valid(array, index, state, ctx)
 }
 
 /// A validity accessor with the parent probe's retention policy.
@@ -244,7 +262,7 @@ pub struct ValidityProbe<'p> {
 }
 
 enum ValidityAccess<'p> {
-    Once(Validity),
+    Once(ProbeValidity),
     Repeated(&'p mut ProbeValidity),
 }
 
@@ -252,20 +270,35 @@ impl ValidityProbe<'_> {
     pub(super) fn once(array: &ArrayRef) -> VortexResult<Self> {
         Ok(Self {
             len: array.len(),
-            inner: ValidityAccess::Once(array.validity()?),
+            inner: ValidityAccess::Once(array.validity()?.probe(ProbeUsage::Once)),
         })
     }
 
     /// Read a non-null boolean scalar indicating whether the requested row is valid.
     pub fn execute_scalar(&mut self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<Scalar> {
         vortex_ensure!(index < self.len, OutOfBounds: index, 0, self.len);
+        self.validity().execute_scalar(index, ctx)
+    }
+
+    /// Returns whether the row at `index` is valid.
+    pub fn execute_is_valid(&mut self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<bool> {
+        vortex_ensure!(index < self.len, OutOfBounds: index, 0, self.len);
+        self.validity().execute_is_valid(index, ctx)
+    }
+
+    /// Returns whether the row at `index` is null.
+    pub fn execute_is_invalid(
+        &mut self,
+        index: usize,
+        ctx: &mut ExecutionCtx,
+    ) -> VortexResult<bool> {
+        Ok(!self.execute_is_valid(index, ctx)?)
+    }
+
+    fn validity(&mut self) -> &mut ProbeValidity {
         match &mut self.inner {
-            ValidityAccess::Once(validity) => match validity {
-                Validity::NonNullable | Validity::AllValid => Ok(true.into()),
-                Validity::AllInvalid => Ok(false.into()),
-                Validity::Array(array) => array.execute_scalar(index, ctx),
-            },
-            ValidityAccess::Repeated(validity) => validity.execute_scalar(index, ctx),
+            ValidityAccess::Once(validity) => validity,
+            ValidityAccess::Repeated(validity) => validity,
         }
     }
 }
@@ -276,7 +309,7 @@ fn validity_access<'p>(
 ) -> VortexResult<ValidityProbe<'p>> {
     let validity = match slot {
         Some(validity) => validity,
-        slot @ None => slot.insert(ProbeValidity::new(array.validity()?, ProbeUsage::Repeated)),
+        slot @ None => slot.insert(array.validity()?.probe(ProbeUsage::Repeated)),
     };
     Ok(ValidityProbe {
         len: array.len(),
@@ -284,25 +317,49 @@ fn validity_access<'p>(
     })
 }
 
-enum ProbeValidity {
-    Constant(bool),
+/// A validity accessor that retains preparation between lookups.
+///
+/// Built by [`Validity::probe`]. Constant validity retains nothing; array-backed validity
+/// delegates to an [`ArrayProbe`] over the underlying boolean array.
+pub enum ProbeValidity {
+    /// Every row is valid, whether or not the dtype is nullable.
+    AllValid,
+    /// Every row is null.
+    AllInvalid,
+    /// Validity backed by a boolean array.
     Array(ArrayProbe),
 }
 
 impl ProbeValidity {
-    fn new(validity: Validity, usage: ProbeUsage) -> Self {
-        match validity {
-            Validity::NonNullable | Validity::AllValid => Self::Constant(true),
-            Validity::AllInvalid => Self::Constant(false),
-            Validity::Array(array) => Self::Array(ArrayProbe::new(array, usage)),
+    /// Read a non-null boolean scalar indicating whether the requested row is valid.
+    pub fn execute_scalar(&mut self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<Scalar> {
+        match self {
+            Self::AllValid => Ok(true.into()),
+            Self::AllInvalid => Ok(false.into()),
+            Self::Array(probe) => probe.execute_scalar(index, ctx),
         }
     }
 
-    fn execute_scalar(&mut self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<Scalar> {
+    /// Returns whether the row at `index` is valid.
+    pub fn execute_is_valid(&mut self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<bool> {
         match self {
-            Self::Constant(valid) => Ok((*valid).into()),
-            Self::Array(probe) => probe.execute_scalar(index, ctx),
+            Self::AllValid => Ok(true),
+            Self::AllInvalid => Ok(false),
+            Self::Array(probe) => probe
+                .execute_scalar(index, ctx)?
+                .as_bool()
+                .value()
+                .ok_or_else(|| vortex_err!("validity value at index {index} is null")),
         }
+    }
+
+    /// Returns whether the row at `index` is null.
+    pub fn execute_is_invalid(
+        &mut self,
+        index: usize,
+        ctx: &mut ExecutionCtx,
+    ) -> VortexResult<bool> {
+        Ok(!self.execute_is_valid(index, ctx)?)
     }
 }
 

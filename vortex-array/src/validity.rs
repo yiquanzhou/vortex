@@ -20,10 +20,13 @@ use vortex_error::vortex_err;
 use vortex_mask::Mask;
 use vortex_mask::MaskValues;
 
+use crate::ArrayProbe;
 use crate::ArrayRef;
 use crate::Canonical;
 use crate::ExecutionCtx;
 use crate::IntoArray;
+use crate::ProbeUsage;
+use crate::ProbeValidity;
 use crate::VortexSessionExecute;
 use crate::arrays::BoolArray;
 use crate::arrays::ChunkedArray;
@@ -159,6 +162,18 @@ impl Validity {
         match nullability {
             Nullability::NonNullable => self,
             Nullability::Nullable => self.into_nullable(),
+        }
+    }
+
+    /// Create an accessor with the requested policy for retaining state between lookups.
+    ///
+    /// Mirrors [`ArrayRef::probe`]. Constant validity retains nothing; array-backed validity
+    /// probes the underlying boolean array.
+    pub fn probe(self, usage: ProbeUsage) -> ProbeValidity {
+        match self {
+            Self::NonNullable | Self::AllValid => ProbeValidity::AllValid,
+            Self::AllInvalid => ProbeValidity::AllInvalid,
+            Self::Array(array) => ProbeValidity::Array(ArrayProbe::new(array, usage)),
         }
     }
 
