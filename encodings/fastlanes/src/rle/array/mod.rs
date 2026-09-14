@@ -94,6 +94,7 @@ pub trait RLEArrayExt: RLEArraySlotsExt {
         reason = "expect is safe here as scalar_at returns a valid primitive"
     )]
     fn values_idx_offset(&self, chunk_idx: usize, ctx: &mut ExecutionCtx) -> usize {
+        // FIXME: Use the probe API to reuse child preparation across offset reads.
         self.values_idx_offsets()
             .execute_scalar(chunk_idx, ctx)
             .expect("index must be in bounds")
