@@ -171,13 +171,14 @@ impl Validity {
     /// probes the underlying boolean array.
     pub fn probe(self, usage: ProbeUsage) -> ProbeValidity {
         match self {
-            Self::NonNullable | Self::AllValid => ProbeValidity::AllValid,
-            Self::AllInvalid => ProbeValidity::AllInvalid,
+            Self::NonNullable | Self::AllValid => ProbeValidity::Constant(true),
+            Self::AllInvalid => ProbeValidity::Constant(false),
             Self::Array(array) => ProbeValidity::Array(ArrayProbe::new(array, usage)),
         }
     }
 
     /// Returns whether the `index` item is valid, using `ctx` to execute the validity array.
+    // Todo(joe): deprecate this
     #[inline]
     pub fn execute_is_valid(&self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<bool> {
         Ok(match self {
@@ -192,6 +193,7 @@ impl Validity {
     }
 
     /// Returns whether the `index` item is null, using `ctx` to execute the validity array.
+    // Todo(joe): deprecate this
     #[inline]
     pub fn execute_is_null(&self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<bool> {
         Ok(!self.execute_is_valid(index, ctx)?)

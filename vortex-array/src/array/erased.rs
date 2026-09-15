@@ -21,13 +21,11 @@ use crate::AnyCanonical;
 use crate::Array;
 use crate::ArrayEq;
 use crate::ArrayHash;
-use crate::ArrayProbe;
 use crate::ArrayView;
 use crate::Canonical;
 use crate::ExecutionCtx;
 use crate::ExecutionResult;
 use crate::IntoArray;
-use crate::ProbeUsage;
 use crate::VTable;
 use crate::VortexSessionExecute;
 use crate::aggregate_fn::fns::sum::sum;
@@ -36,7 +34,8 @@ use crate::array::ArrayId;
 use crate::array::ArrayInner;
 use crate::array::ArraySlots;
 use crate::array::DynArrayData;
-use crate::array::probe;
+use crate::array::probe::ArrayProbe;
+use crate::array::probe::ProbeUsage;
 use crate::arrays::Constant;
 use crate::arrays::DictArray;
 use crate::arrays::FilterArray;
@@ -278,10 +277,11 @@ impl ArrayRef {
     /// Execute the array to extract a scalar at the given index.
     // TODO(joe): deprecate this.
     pub fn execute_scalar(&self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<Scalar> {
-        probe::execute_scalar(self, None, index, ctx)
+        self.probe(ProbeUsage::Once).execute_scalar(index, ctx)
     }
 
-    /// Create an accessor with the requested policy for retaining state between scalar lookups.
+    /// Create an owned accessor with the requested policy for retaining state between scalar
+    /// lookups. The probe may outlive this handle.
     ///
     /// ```
     /// use vortex_array::{IntoArray, ProbeUsage, VortexSessionExecute};
@@ -294,17 +294,18 @@ impl ArrayRef {
     /// assert_eq!(probe.execute_scalar(0, &mut ctx)?, 10i32.into());
     /// # Ok::<(), vortex_error::VortexError>(())
     /// ```
-    pub fn probe(&self, usage: ProbeUsage) -> ArrayProbe {
+    pub fn probe(&self, usage: ProbeUsage) -> ArrayProbe<'static> {
         ArrayProbe::new(self.clone(), usage)
     }
 
     /// Returns whether the item at `index` is valid.
     // TODO(joe): deprecate this.
     pub fn is_valid(&self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<bool> {
-        probe::execute_is_valid(self, None, index, ctx)
+        ArrayProbe::borrowed(self, ProbeUsage::Once).execute_is_valid(index, ctx)
     }
 
     /// Returns whether the item at `index` is invalid.
+    // TODO(joe): deprecate this.
     pub fn is_invalid(&self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<bool> {
         Ok(!self.is_valid(index, ctx)?)
     }

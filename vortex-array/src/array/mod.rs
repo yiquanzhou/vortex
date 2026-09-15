@@ -30,18 +30,8 @@ pub use erased::*;
 
 mod plugin;
 pub use plugin::*;
-
 mod probe;
-pub use probe::ArrayProbe;
-pub use probe::ProbeAccess;
-pub use probe::ProbeChildren;
-pub use probe::ProbeCtx;
-pub use probe::ProbeSlot;
-pub use probe::ProbeState;
-use probe::ProbeStorage;
-pub use probe::ProbeUsage;
-pub use probe::ProbeValidity;
-pub use probe::ValidityProbe;
+pub use probe::*;
 
 mod foreign;
 pub(crate) use foreign::*;
@@ -232,19 +222,12 @@ pub(crate) trait DynArrayData: 'static + private::Sealed + Send + Sync + Debug {
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<ExecutionResult>;
 
-    fn probe_is_valid(
-        &self,
-        this: &ArrayRef,
-        index: usize,
-        state: Option<&mut ProbeStorage>,
-        ctx: &mut ExecutionCtx,
-    ) -> VortexResult<bool>;
-
+    /// Read a non-null scalar at `index`, using `storage` for retained state if given.
     fn probe_scalar(
         &self,
         this: &ArrayRef,
         index: usize,
-        state: Option<&mut ProbeStorage>,
+        storage: Option<&mut ProbeStorage>,
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<Scalar>;
 }
@@ -508,38 +491,22 @@ impl<V: VTable> DynArrayData for ArrayData<V> {
         V::execute(typed, ctx)
     }
 
-    fn probe_is_valid(
-        &self,
-        this: &ArrayRef,
-        index: usize,
-        state: Option<&mut ProbeStorage>,
-        ctx: &mut ExecutionCtx,
-    ) -> VortexResult<bool> {
-        let mut validity = match state {
-            Some(storage) => storage
-                .validity::<<V::OperationsVTable as OperationsVTable<V>>::ProbeState>(this)?,
-            None => ValidityProbe::once(this)?,
-        };
-        validity.execute_is_valid(index, ctx)
-    }
-
     fn probe_scalar(
         &self,
         this: &ArrayRef,
         index: usize,
-        state: Option<&mut ProbeStorage>,
+        storage: Option<&mut ProbeStorage>,
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<Scalar> {
+        type Ops<V> = <V as VTable>::OperationsVTable;
         // SAFETY: this adapter belongs to the ArrayData<V> stored in `this`.
         let view = unsafe { ArrayView::new_unchecked(this, &self.data) };
-        match state {
-            Some(storage) => storage.scalar_at(view, index, ctx),
-            None => <V::OperationsVTable as OperationsVTable<V>>::probe_scalar(
-                view,
-                index,
-                ProbeAccess::Once(this),
-                ctx,
-            ),
+        match storage {
+            Some(storage) => Ops::<V>::probe_scalar(view, index, storage.get_or_init()?, ctx),
+            // One-off access: the state lives on the stack for this call only.
+            None => {
+                Ops::<V>::probe_scalar(view, index, &mut ProbeState::new(ProbeUsage::Once), ctx)
+            }
         }
     }
 }
