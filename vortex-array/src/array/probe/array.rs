@@ -117,7 +117,11 @@ pub struct ProbeState<S> {
 }
 
 impl<S: Default> ProbeState<S> {
-    pub(crate) fn new(usage: ProbeUsage) -> Self {
+    /// Create empty state with the given retention policy.
+    ///
+    /// The framework builds this for every probe; encodings only need it to run their
+    /// `probe_scalar` path from `scalar_at` with [`ProbeUsage::Once`].
+    pub fn new(usage: ProbeUsage) -> Self {
         Self {
             state: S::default(),
             children: ProbeChildren {
@@ -125,6 +129,15 @@ impl<S: Default> ProbeState<S> {
                 slots: SmallVec::new(),
             },
         }
+    }
+}
+
+impl<S> ProbeState<S> {
+    /// Whether this state is discarded after one lookup or reused across many.
+    ///
+    /// Encodings whose preparation is expensive should skip it for [`ProbeUsage::Once`].
+    pub fn usage(&self) -> ProbeUsage {
+        self.children.usage
     }
 }
 
