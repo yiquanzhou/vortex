@@ -20,7 +20,8 @@ use crate::scalar::Scalar;
 ///
 /// Array handles share their buffers. [`ProbeUsage::Repeated`] initializes encoding state and
 /// child probes lazily and reuses them for following lookups; [`ProbeUsage::Once`] retains
-/// nothing. An owned probe can outlive the original array handle. Probes are local to a thread.
+/// nothing. A probe built with [`ArrayProbe::new`] owns its handle and can outlive the original;
+/// [`ArrayRef::probe`] borrows it. Probes are local to a thread.
 pub struct ArrayProbe<'a> {
     array: Cow<'a, ArrayRef>,
     retained: Option<Retained>,
@@ -212,7 +213,8 @@ mod tests {
         #[values(ProbeUsage::Once, ProbeUsage::Repeated)] usage: ProbeUsage,
     ) -> VortexResult<()> {
         let mut ctx = crate::array_session().create_execution_ctx();
-        let mut probe = nullable_ints().probe(usage);
+        let array = nullable_ints();
+        let mut probe = array.probe(usage);
         assert!(probe.execute_scalar(3, &mut ctx).is_err());
         assert!(probe.execute_is_valid(3, &mut ctx).is_err());
         assert!(probe.execute_scalar(1, &mut ctx)?.is_null());
@@ -231,7 +233,8 @@ mod tests {
     #[test]
     fn once_retains_nothing() -> VortexResult<()> {
         let mut ctx = crate::array_session().create_execution_ctx();
-        let mut probe = nullable_ints().probe(ProbeUsage::Once);
+        let array = nullable_ints();
+        let mut probe = array.probe(ProbeUsage::Once);
         probe.execute_scalar(0, &mut ctx)?;
         assert!(probe.retained.is_none());
         Ok(())
@@ -241,7 +244,7 @@ mod tests {
     fn repeated_initializes_lazily_and_outlives_handle() -> VortexResult<()> {
         let mut ctx = crate::array_session().create_execution_ctx();
         let array = nullable_ints();
-        let mut probe = array.probe(ProbeUsage::Repeated);
+        let mut probe = ArrayProbe::new(array.clone(), ProbeUsage::Repeated);
         drop(array);
 
         let retained = probe

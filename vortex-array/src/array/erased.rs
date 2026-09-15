@@ -280,8 +280,8 @@ impl ArrayRef {
         self.probe(ProbeUsage::Once).execute_scalar(index, ctx)
     }
 
-    /// Create an owned accessor with the requested policy for retaining state between scalar
-    /// lookups. The probe may outlive this handle.
+    /// Create an accessor over this array with the requested policy for retaining state between
+    /// scalar lookups. The probe borrows this handle; use [`ArrayProbe::new`] for an owned probe.
     ///
     /// ```
     /// use vortex_array::{IntoArray, ProbeUsage, VortexSessionExecute};
@@ -294,14 +294,14 @@ impl ArrayRef {
     /// assert_eq!(probe.execute_scalar(0, &mut ctx)?, 10i32.into());
     /// # Ok::<(), vortex_error::VortexError>(())
     /// ```
-    pub fn probe(&self, usage: ProbeUsage) -> ArrayProbe<'static> {
-        ArrayProbe::new(self.clone(), usage)
+    pub fn probe(&self, usage: ProbeUsage) -> ArrayProbe<'_> {
+        ArrayProbe::borrowed(self, usage)
     }
 
     /// Returns whether the item at `index` is valid.
     // TODO(joe): deprecate this.
     pub fn is_valid(&self, index: usize, ctx: &mut ExecutionCtx) -> VortexResult<bool> {
-        ArrayProbe::borrowed(self, ProbeUsage::Once).execute_is_valid(index, ctx)
+        self.probe(ProbeUsage::Once).execute_is_valid(index, ctx)
     }
 
     /// Returns whether the item at `index` is invalid.
